@@ -12,4 +12,4 @@ services:
       - MANADA_URL=${MANADA_URL}
       - AUTH_URL=${AUTH_URL}
     volumes:
-      - ./manada.stat:/opt/mana-kadai/manda.stat
+      - ./manada.stat:/opt/mana-kadai/manada.stat
