@@ -36,4 +36,4 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/sohosai/${{ github.event.repository.name }}:latest
+            ghcr.io/reversed-R/${{ github.event.repository.name }}:latest
