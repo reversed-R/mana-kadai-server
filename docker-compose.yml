@@ -3,10 +3,6 @@ services:
   mana-kadai:
     build: .
     environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - VISUALIZER_TOKEN=${VISUALIZER_TOKEN}
-      - VISUALIZER_URL=${VISUALIZER_URL}
-      - CHANNELS=${CHANNELS}
       - MANADA_USER=${MANADA_USER}
       - MANADA_PWD=${MANADA_PWD}
       - MANADA_URL=${MANADA_URL}
