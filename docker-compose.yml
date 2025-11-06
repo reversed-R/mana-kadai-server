@@ -11,5 +11,8 @@ services:
       - MANADA_PWD=${MANADA_PWD}
       - MANADA_URL=${MANADA_URL}
       - AUTH_URL=${AUTH_URL}
+      - API_KEY=${API_KEY}
+    ports:
+      - 8080:8080
     volumes:
       - ./manada.stat:/opt/mana-kadai/manada.stat

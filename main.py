@@ -1,53 +1,32 @@
 import requests
 import re
-import discord
 import os
 import zoneinfo
 import traceback
 from datetime import datetime, timedelta
 from html import unescape
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import uvicorn
 
 load_dotenv()
 
-TOKEN = os.getenv("BOT_TOKEN", "")
-VISUALIZER_TOKEN = os.getenv("VISUALIZER_TOKEN", "")
-VISUALIZER_URL = os.getenv("VISUALIZER_URL", "")
-CHANNELS = list(map(int, os.getenv("CHANNELS", "").split(' ')))
+API_KEY = os.getenv("API_KEY", "")
 MANADA_USER = os.getenv("MANADA_USER", "")
 MANADA_PWD = os.getenv("MANADA_PWD", "")
 AUTH_URL = os.getenv("AUTH_URL", "")
 MANADA_URL = os.getenv("MANADA_URL", "")
-STATUS_FILE_PATH = "/opt/mana-kadai/manada.stat"
 
-NOTIFIED_TXT = 'notified'
-
-if not all(
-    [
-        e
-        for e in (
-            TOKEN,
-            CHANNELS,
-            MANADA_USER,
-            MANADA_PWD,
-            AUTH_URL,
-            MANADA_URL,
-            VISUALIZER_TOKEN,
-            VISUALIZER_URL,
-        )
-    ]
-):
+if not all([API_KEY, MANADA_USER, MANADA_PWD, AUTH_URL, MANADA_URL]):
     print("Not all variables are set")
     exit(1)
 
-HIGH_PRI = 0xFF0000
-MEDIUM_PRI = 0xF58216
-LOW_PRI = 0x86DC3D
-NO_TASK = 0x33C7FF
 DUE_FORMAT = "%Y-%m-%d %H:%M"
-COLOR_LIST = [0x000000, HIGH_PRI, MEDIUM_PRI, LOW_PRI]
 UA = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/116.0"
 
+# FastAPI setup
+app = FastAPI(title="Manada Assignment API")
 
 def get_shib() -> dict[str, str]:
     s = requests.session()
@@ -124,13 +103,7 @@ def get_shib() -> dict[str, str]:
     ][0]
     return {f"{shib_key}": s.cookies.get_dict()[shib_key]}
 
-
-def send_to_visualizer(dues):
-    headers = {"Authorization": f"Bearer {VISUALIZER_TOKEN}"}
-    requests.put(VISUALIZER_URL, headers=headers, json=dues)
-
-
-def get_messages() -> list[discord.Embed]:
+def fetch_assignments():
     headers = {"User-Agent": UA}
 
     cookies = get_shib()
@@ -141,97 +114,56 @@ def get_messages() -> list[discord.Embed]:
         headers=headers,
     )
 
-    res = []
     dues = []
     for e in r.text.split("myassignments-title")[1:]:
         due = re.findall(r'td-period">(.*)</td>', e)
-        priority = 0
         if not (due and len(due) >= 2 and due[1].startswith("202")):
             continue
         due_iso = due[1].strip().replace(" ", "T")
         due_readable = datetime.strptime(f"{due[1].strip()} +09:00", f"{DUE_FORMAT} %z")
         due_remain = due_readable - datetime.now(tz=zoneinfo.ZoneInfo("Asia/Tokyo"))
 
-        # overdue check
         if due_remain < timedelta(days=0):
             continue
+        if due_remain < timedelta(days=7):
+            url_name = re.search(r'<a href="(.+)">(.+?)</a>', e)
+            course = re.search(r'class="mycourse-title"><.*>(.*)</a>', e)
+            if not url_name or not course:
+                continue
 
-        if due_remain < timedelta(days=1):
-            priority = 1
-        elif due_remain < timedelta(days=3):
-            priority = 2
-        elif due_remain < timedelta(days=7):
-            priority = 3
-        else:
-            continue
-
-        url_name = re.search(r'<a href="(.+)">(.+?)</a>', e)
-        course = re.search(r'class="mycourse-title"><.*>(.*)</a>', e)
-        if not url_name or not course:
-            continue
-
-        url = f"{MANADA_URL}/ct/" + url_name.group(1)
-        title = url_name.group(2).replace("amp;", "")
-        course = course.group(1).replace("amp;", "")
-        color = COLOR_LIST[priority]
-        embed = discord.Embed(title=title, url=url, color=color)
-        embed.add_field(name="コース", value=course, inline=False)
-        embed.add_field(
-            name="締切", value=due_readable.strftime(DUE_FORMAT), inline=True
-        )
-        embed.add_field(
-            name="残り時間",
-            value=f"{due_remain.days}d {due_remain.seconds // (60 * 60)}h {due_remain.seconds // 60 % 60}m",
-            inline=True,
-        )
-        res.append(embed)
-        dues.append({"title": title, "deadline": due_iso, "course": course})
-
-    with open(STATUS_FILE_PATH, 'r+') as f:
-        did_notified = f.read() == NOTIFIED_TXT
-        if res:
-            f.truncate(0)
-        else:
-            if did_notified:
-                return []
-            else:
-                embed = discord.Embed(title="直近の課題なし", color=NO_TASK)
-                res.append(embed)
-                f.write(NOTIFIED_TXT)
-    send_to_visualizer(dues)
-    return res
+            dues.append({
+                "title": url_name.group(2).replace("amp;", ""),
+                "course": course.group(1).replace("amp;", ""),
+                "deadline": due_iso,
+                "remaining": {
+                    "days": due_remain.days,
+                    "hours": due_remain.seconds // 3600,
+                    "minutes": (due_remain.seconds // 60) % 60,
+                },
+                "url": f"{MANADA_URL}/ct/" + url_name.group(1),
+            })
+    return dues
 
 
-def send_msg(msgs: list[discord.Embed], channel: int):
-    client = discord.Client(intents=discord.Intents.default())
+# endpoints
+@app.get("/assignments")
+async def get_assignments(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if auth_header != f"Bearer {API_KEY}":
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-    @client.event
-    async def on_ready():
-        for msg in msgs:
-            await client.get_channel(channel).send(embed=msg)
-        await client.close()
+    try:
+        dues = fetch_assignments()
+        return JSONResponse(content=dues)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
-    client.run(TOKEN)
 
-
-def send_err(msg: str):
-    client = discord.Client(intents=discord.Intents.default())
-
-    @client.event
-    async def on_ready():
-        for channel in CHANNELS:
-            await client.get_channel(channel).send(f"```{msg}```")
-        await client.close()
-
-    client.run(TOKEN)
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Use /assignments with Authorization header"}
 
 
 if __name__ == "__main__":
-    try:
-        msg = get_messages()
-        if not msg:
-            exit(0)
-        for channel in CHANNELS:
-            send_msg(msg, channel)
-    except Exception:
-        send_err(traceback.format_exc())
+    uvicorn.run(app, host="0.0.0.0", port=8080)
